@@ -1,0 +1,6 @@
+name: Koth
+version: 0.1.0
+main: com.defiancecraft.modules.koth.Koth
+softdepend: [MVdWPlaceholderAPI, AirBar]
+commands:
+  koth:
