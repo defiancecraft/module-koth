@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
@@ -26,6 +27,7 @@ import com.defiancecraft.modules.koth.config.KothConfig.LootTable;
 import com.defiancecraft.modules.koth.config.KothConfig.LootTableItem;
 import com.defiancecraft.modules.koth.game.tasks.WinnerHasWonTask;
 import com.defiancecraft.modules.koth.game.tasks.WinnerParticlesTask;
+import com.sk89q.worldedit.bukkit.selections.Selection;
 
 public class Game {
 
@@ -37,7 +39,7 @@ public class Game {
 	 * that they entered. This way, top of the set will be the
 	 * 'winning' player.
 	 */
-	private LinkedHashSet<UUID> active = new LinkedHashSet<>();
+	private final LinkedHashSet<UUID> active = new LinkedHashSet<>();
 	
 	/**
 	 * A set of participants, i.e. all of those who entered
@@ -70,6 +72,8 @@ public class Game {
 	 * The previously winning player
 	 */
 	private UUID winner;
+	
+	private final Object winnerLock = new Object();
 	
 	// TODO doc
 	private WinnerHasWonTask winnerHasWonTask;
@@ -104,7 +108,7 @@ public class Game {
 		for (LootTable table : config.lootTables) {
 
 			// Ensure we have the right number of players
-			if (table.minPlayers >= initialPlayers)
+			if (table.minPlayers > initialPlayers)
 				continue;
 			
 			// If this is a consolation table, treat it as such
@@ -121,8 +125,8 @@ public class Game {
 				
 				// Set if: a) the current table is not set
 				//     or  b) min players of this is higher than current table's min players (and so this table is better)
-				if (this.lootTable.minPlayers < table.minPlayers
-						|| this.lootTable == null)
+				if (this.lootTable == null 
+						|| this.lootTable.minPlayers < table.minPlayers)
 					this.lootTable = table;				
 			}
 			
@@ -152,11 +156,28 @@ public class Game {
 		
 		// Set airbar to 'alternative'
 		if (airbarEnabled)
-			for (Player player : Bukkit.getOnlinePlayers())
+			for (Player player : Bukkit.getOnlinePlayers()) {
+				AirBarAPI.removeAirBarOverride(player, config.defaultAirbar);
 				AirBarAPI.showAirBar(player, config.alternativeAirbar);
+			}
 		
 		// Update running status
 		this.running = true;
+		
+		// Get players inside the region already
+		// Players online are randomized such that the 'winner' is
+		// determined in a fair way.
+		//
+		// N.B. could be slightly more optimized by only shuffling players inside region
+		Selection sel = config.region.toSelection();
+		List<Player> onlinePlayers = new ArrayList<>(Bukkit.getOnlinePlayers());
+		Collections.shuffle(onlinePlayers);
+		
+		for (Player player : onlinePlayers) {
+			// If player is in region, pretend they just entered it
+			if (sel.contains(player.getLocation()))
+				onPlayerEnterRegion(player);
+		}
 	}
 
 	void stop(boolean awardPlayers) {
@@ -171,8 +192,17 @@ public class Game {
 		
 		// Set airbar back to default
 		if (airbarEnabled)
-			for (Player player : Bukkit.getOnlinePlayers())
+			for (Player player : Bukkit.getOnlinePlayers()) {
+				AirBarAPI.removeAirBarOverride(player, config.alternativeAirbar);
 				AirBarAPI.showAirBar(player, config.defaultAirbar);
+			}
+		
+		// Stop tasks
+		if (winnerHasWonTask != null)
+			winnerHasWonTask.cancel();
+		
+		if (winnerParticlesTask != null)
+			winnerParticlesTask.cancel();
 		
 		if (awardPlayers) {
 			
@@ -188,7 +218,7 @@ public class Game {
 				Player participant = Bukkit.getPlayer(uuid);
 				
 				// Ensure participant is online
-				if (participant != null && participant.isOnline()) {
+				if (participant != null && participant.isOnline() && participant != winner) {
 					// Give consolation loot and inform them if any was received
 					if (giveRandomLoot(participant, consolationTable, config.consolationAmount))
 						participant.sendMessage(formatMessage(config.lang.consolation, ""));
@@ -219,9 +249,8 @@ public class Game {
 		if (active.size() < 1)
 			return null;
 		
-		UUID current = null;
-		
-		for (Iterator<UUID> iter = active.iterator(); iter.hasNext(); current = iter.next()) {
+		for (Iterator<UUID> iter = active.iterator(); iter.hasNext();) {
+			UUID current = iter.next();
 			Player player = Bukkit.getPlayer(current);
 			
 			// Only look for winners that are online; don't bother
@@ -245,47 +274,54 @@ public class Game {
 	}
 	
 	public void onWinnerChanged() {
+		
 		if (!running)
 			return;
 		
 		// We want sequential winner updates, not concurrent
 		// updates of the winner! (This method is likely called by
 		// an asynchronous event thread)
-		synchronized (winner) {
+		synchronized (winnerLock) {
+			
 			Player oldWinner = winner == null ? null : Bukkit.getPlayer(winner);
-			Player newWinner = getWinningPlayer();
-			
-			// Ensure winner has actually changed
-			if (newWinner.getUniqueId().equals(winner))
-				return;
-			
+			Player newWinner = getWinningPlayer(); // Can be null if nobody is winning!
+			String newWinnerName = newWinner == null ? config.lang.noWinnerString : newWinner.getName(); // Note that winner can be null
+
 			// Announce that winner has changed
-			Bukkit.broadcastMessage(formatMessage(config.lang.winnerChanged, newWinner.getName()));
+			Bukkit.broadcastMessage(formatMessage(config.lang.winnerChanged, newWinnerName));
 			
 			// Inform oldWinner they're now losing
 			if (oldWinner != null && oldWinner.isOnline()) {
-				oldWinner.sendMessage(formatMessage(config.lang.losing, newWinner.getName()));
+				oldWinner.sendMessage(formatMessage(config.lang.losing, newWinnerName));
 			}
-			
+	
 			// End oldWinner's tasks
 			if (winnerHasWonTask != null)
 				winnerHasWonTask.cancel();
 			
+			if (winnerHasWonInstant != null)
+				winnerHasWonInstant = Instant.now();
+			
 			if (winnerParticlesTask != null)
 				winnerParticlesTask.cancel();
 			
-			// Inform newWinner they're now winning
-			newWinner.sendMessage(formatMessage(config.lang.winning, newWinner.getName()));
-	
-			// Start newWinner's tasks
-			this.winnerHasWonTask = new WinnerHasWonTask(plugin);
-			this.winnerHasWonTask.runTaskLater(plugin, config.winTimeSeconds * 20);
-			this.winnerHasWonInstant = Instant.now().plus(Duration.of(config.winTimeSeconds, ChronoUnit.SECONDS));
-			this.winnerParticlesTask = new WinnerParticlesTask(config, newWinner);
-			this.winnerParticlesTask.runTaskTimer(plugin, 0L, config.winParticleFrequencyTicks);
+			// If new winner isn't nobody, start tasks for them
+			if (newWinner != null) {
+				
+				// Inform newWinner they're now winning
+				newWinner.sendMessage(formatMessage(config.lang.winning, newWinner.getName()));
+		
+				// Start newWinner's tasks
+				this.winnerHasWonTask = new WinnerHasWonTask(plugin);
+				this.winnerHasWonTask.runTaskLater(plugin, config.winTimeSeconds * 20);
+				this.winnerHasWonInstant = Instant.now().plus(Duration.of(config.winTimeSeconds, ChronoUnit.SECONDS));
+				this.winnerParticlesTask = new WinnerParticlesTask(config, newWinner);
+				this.winnerParticlesTask.runTaskTimer(plugin, 0L, config.winParticleFrequencyTicks);
+				
+			}
 			
 			// Update the winner
-			this.winner = newWinner.getUniqueId();
+			this.winner = newWinner == null ? null : newWinner.getUniqueId();
 		}
 		
 	}
@@ -307,11 +343,14 @@ public class Game {
 		if (!running)
 			return;
 		
+		Player winner = getWinningPlayer();
+		boolean wasWinning = winner != null && winner.getUniqueId().equals(player.getUniqueId());
+
 		synchronized (active) {
 			active.remove(player.getUniqueId());
 		}
-		
-		if (active.size() > 0)
+
+		if (wasWinning)
 			onWinnerChanged();
 	}
 	
@@ -367,8 +406,13 @@ public class Game {
 		message = message == null ? "" : message;
 		return ChatColor.translateAlternateColorCodes('&', message
 			.replace("{winner}", winningPlayer)
-			.replace("{loot_friendlyname}", lootTable.friendlyName)
+			.replace("{loot_friendlyname}", lootTable == null ? "none" : lootTable.friendlyName)
 		);
+	}
+	
+	public static void debug(String msg) {
+		System.out.println(msg);
+		Bukkit.broadcastMessage(msg);
 	}
 	
 }

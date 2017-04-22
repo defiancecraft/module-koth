@@ -17,8 +17,7 @@ public class StartGameTask extends BukkitRunnable {
 		// scheduled when game is not running.
 		if (!man.isGameRunning())
 			if (!man.startGame())
-				// Schedule another game start if this one could not happen 
-				this.runTaskLater(man.getPlugin(), man.getPlugin().getConfiguration().intervalSeconds * 20);
+				man.scheduleNextGame();
 	}
 	
 }

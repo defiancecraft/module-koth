@@ -11,6 +11,7 @@ import com.defiancecraft.modules.koth.commands.AdminCommands;
 import com.defiancecraft.modules.koth.config.KothConfig;
 import com.defiancecraft.modules.koth.game.Game;
 import com.defiancecraft.modules.koth.game.GameManager;
+import com.defiancecraft.modules.koth.listeners.PlayerJoinListener;
 import com.defiancecraft.modules.koth.listeners.PlayerMovementListener;
 import com.defiancecraft.modules.koth.utils.DurationFormatter;
 
@@ -30,6 +31,7 @@ public class Koth extends JavaModule {
     	
     	// Register listeners
     	this.getServer().getPluginManager().registerEvents(new PlayerMovementListener(man), this);
+    	this.getServer().getPluginManager().registerEvents(new PlayerJoinListener(this), this);
     	
     	// Register commands
     	AdminCommands adminCmds = new AdminCommands(this);
@@ -51,7 +53,7 @@ public class Koth extends JavaModule {
     		
     		/* koth_winner: winner of current KOTH game */
     		PlaceholderAPI.registerPlaceholder(this, "koth_winner", (event) -> {
-    			
+
     			Game game = this.man.getGame();
     			// Ensure game is running
     			if (game == null)
@@ -61,7 +63,7 @@ public class Koth extends JavaModule {
     			// Ensure winner is existent
     			if (winner == null)
     				return this.config.lang.noWinnerString;
-    			
+
     			return winner.getName();
     			
     		});

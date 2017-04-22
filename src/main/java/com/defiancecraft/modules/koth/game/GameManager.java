@@ -6,6 +6,9 @@ import java.time.temporal.ChronoUnit;
 
 import org.bukkit.Bukkit;
 
+import be.maximvdw.airbar.AirBar;
+import be.maximvdw.airbar.api.AirBarAPI;
+
 import com.defiancecraft.modules.koth.Koth;
 import com.defiancecraft.modules.koth.game.tasks.StartGameTask;
 
@@ -22,12 +25,11 @@ public class GameManager {
 	}
 	
 	public void scheduleNextGame() {
-		if (this.startTask == null)
-			this.startTask = new StartGameTask(this);
-		
 		// Ensure a game is not running; otherwise, this start
 		// could coincide with the current game!
 		if (!isGameRunning()) {
+			// We must create a NEW start task every time we run it... (can't reschedule)
+			this.startTask = new StartGameTask(this);
 			this.startTask.runTaskLater(plugin, plugin.getConfiguration().intervalSeconds * 20 /* seconds -> ticks */);
 			this.nextStartTask = Instant.now().plus(Duration.of(plugin.getConfiguration().intervalSeconds, ChronoUnit.SECONDS));
 		}
